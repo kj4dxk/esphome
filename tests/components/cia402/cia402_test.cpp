@@ -363,4 +363,39 @@ TEST_F(DriveTest, NonOperationalHeartbeatCancelsPendingMotion) {
   EXPECT_FALSE(drive.enable());
 }
 
+TEST_F(DriveTest, HomingRequiresEnabledStationaryDrive) {
+  ASSERT_TRUE(drive.home(19, 1000, 500, 2000, 0));
+  EXPECT_EQ(index(next()), 0x6041);
+  reply(0x27);
+  EXPECT_EQ(index(next()), 0x606C);
+  reply(100, 4);
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results.front(), DriveResult::DRIVE_RESULT_REJECTED);
+}
+
+TEST_F(DriveTest, ZeroingRejectsPositionThatDidNotBecomeZero) {
+  ASSERT_TRUE(drive.zero_position());
+  for (unsigned i = 0; i < 40 && results.empty(); i++) {
+    const auto frame = next();
+    if (!results.empty())
+      break;
+    const auto object = index(frame);
+    if (frame.data[0] != 0x40) {
+      reply();
+    } else if (object == 0x6041) {
+      reply(0x1027, 2);
+    } else if (object == 0x6061) {
+      reply(6, 1);
+    } else if (object == 0x6064) {
+      reply(123, 4);
+    } else {
+      reply(0, 4);
+    }
+  }
+  ASSERT_FALSE(results.empty());
+  EXPECT_EQ(results.front(), DriveResult::DRIVE_RESULT_REJECTED);
+  for (const auto &frame : bus.sent)
+    EXPECT_FALSE(frame.can_id == 0x620 && index(frame) == 0x607A && frame.data[0] != 0x40);
+}
+
 }  // namespace esphome::cia402::testing

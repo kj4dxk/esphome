@@ -36,6 +36,12 @@ class CiA402Drive : public PollingComponent, public canopen::CANopenNode {
   void loop() override;
   void update() override;
   void dump_config() override;
+  bool home(int8_t method, uint32_t fast, uint32_t slow, uint32_t acceleration, int32_t offset);
+  bool zero_position();
+  bool refresh();
+  DriveResult get_last_result() const { return this->last_result_; }
+  uint32_t get_digital_inputs() const { return this->digital_inputs_; }
+  uint16_t get_last_emcy() const { return this->last_emcy_; }
   bool enable();
   bool disable();
   bool halt();
@@ -95,7 +101,10 @@ class CiA402Drive : public PollingComponent, public canopen::CANopenNode {
   bool position_allowed_(int64_t position) const;
   virtual void received_value(uint16_t index, uint32_t value);
   bool request_stop_(uint16_t controlword);
-  void finish_(DriveResult result);
+  virtual void sequence_complete_();
+  virtual Step poll_step_(uint8_t index) const;
+  virtual uint8_t poll_count_() const { return 5; }
+  virtual void finish_(DriveResult result);
   void fail_(DriveResult result);
   static void on_result(void *context, const canopen::SDOReply &reply);
   void process_result_(canopen::SDOResult result, uint32_t value, uint8_t size);
@@ -137,6 +146,10 @@ class CiA402Drive : public PollingComponent, public canopen::CANopenNode {
   bool poll_due_{false};
   bool resetting_{false};
   bool position_limits_{false};
+  bool homing_{false};
+  uint32_t digital_inputs_{0};
+  uint16_t last_emcy_{0};
+  DriveResult last_result_{DriveResult::DRIVE_RESULT_REJECTED};
 };
 
 }  // namespace esphome::cia402

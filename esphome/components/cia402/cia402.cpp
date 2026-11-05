@@ -70,6 +70,7 @@ void CiA402Drive::on_node_nmt_changed(canopen::NMTState state) {
 }
 
 void CiA402Drive::on_node_emcy(const canopen::Emergency &emergency) {
+  this->last_emcy_ = emergency.error_code;
   if (emergency.error_code == 0)
     return;
   this->status_set_warning();
@@ -215,6 +216,8 @@ void CiA402Drive::finish_(DriveResult result) {
   this->step_count_ = 0;
   this->step_index_ = 0;
   this->resetting_ = false;
+  this->homing_ = false;
+  this->last_result_ = result;
   this->result_callback_.call(result);
 }
 
@@ -252,8 +255,7 @@ void CiA402Drive::loop() {
   }
   if (this->running_) {
     if (this->step_index_ == this->step_count_) {
-      this->status_clear_warning();
-      this->finish_(DriveResult::DRIVE_RESULT_SUCCESS);
+      this->sequence_complete_();
     } else if (now - this->last_request_ms_ >= 50) {
       this->pending_sequence_ = true;
       this->send_step_(this->steps_[this->step_index_]);
@@ -261,24 +263,8 @@ void CiA402Drive::loop() {
     return;
   }
   if (this->poll_due_) {
-    uint16_t index = 0x6041;
-    uint8_t size = 2;
-    switch (this->poll_index_) {
-      case 1:
-        index = 0x6061;
-        size = 1;
-        break;
-      case 2:
-        index = 0x6064;
-        size = 4;
-        break;
-      case 3:
-        index = 0x606C;
-        size = 4;
-        break;
-    }
-    this->send_step_({0, 0, index, 0, size, StepKind::STEP_KIND_READ});
-    this->poll_index_ = (this->poll_index_ + 1) % 4;
+    this->send_step_(this->poll_step_(this->poll_index_));
+    this->poll_index_ = (this->poll_index_ + 1) % this->poll_count_();
     this->poll_due_ = this->poll_index_ != 0;
     return;
   }
@@ -303,6 +289,9 @@ void CiA402Drive::on_result(void *context, const canopen::SDOReply &reply) {
 
 void CiA402Drive::received_value(uint16_t index, uint32_t value) {
   switch (index) {
+    case 0x60FD:
+      this->digital_inputs_ = value;
+      break;
     case 0x6041:
       this->statusword_ = value;
       break;
@@ -355,7 +344,7 @@ void CiA402Drive::process_result_(canopen::SDOResult result, uint32_t value, uin
     this->received_value(step.index, value);
   if (!sequence || !this->running_ || this->stopping_)
     return;
-  if (!this->resetting_ && step.index == 0x6041 && (value & 8)) {
+  if (!this->resetting_ && step.index == 0x6041 && ((value & 8) || (this->homing_ && (value & 0x2000)))) {
     this->fail_(DriveResult::DRIVE_RESULT_FAULT);
     return;
   }
@@ -374,6 +363,58 @@ void CiA402Drive::process_result_(canopen::SDOResult result, uint32_t value, uin
     this->steps_[this->step_index_ + 1].value = static_cast<uint32_t>(target);
   }
   this->step_index_++;
+}
+
+
+void CiA402Drive::sequence_complete_() {
+  this->status_clear_warning();
+  this->finish_(DriveResult::DRIVE_RESULT_SUCCESS);
+}
+
+CiA402Drive::Step CiA402Drive::poll_step_(uint8_t index) const {
+  static constexpr uint16_t indices[] = {0x6041, 0x6061, 0x6064, 0x606C, 0x60FD};
+  static constexpr uint8_t sizes[] = {2, 1, 4, 4, 4};
+  return {0, 0, indices[index], 0, sizes[index], StepKind::STEP_KIND_READ};
+}
+
+bool CiA402Drive::home(int8_t method, uint32_t fast, uint32_t slow, uint32_t acceleration, int32_t offset) {
+  if (fast == 0 || slow == 0 || acceleration == 0 || !this->begin_())
+    return false;
+  this->homing_ = true;
+  this->read_(0x6041, 2, 0x6F, 0x27);
+  this->read_(0x606C, 4, UINT32_MAX, 0);
+  this->write_(0x6060, 6, 1);
+  this->read_(0x6061, 1, 0xFF, 6, true);
+  this->write_(0x6098, static_cast<uint8_t>(method), 1);
+  this->write_(0x6099, fast, 4, 1);
+  this->write_(0x6099, slow, 4, 2);
+  this->write_(0x609A, acceleration, 4);
+  this->write_(0x607C, static_cast<uint32_t>(offset), 4);
+  this->write_(0x6040, 15, 2);
+  this->write_(0x6040, 31, 2);
+  this->read_(0x6041, 2, 0x3000, 0x1000, true);
+  this->read_(0x606C, 4, UINT32_MAX, 0, true);
+  this->read_(0x6064, 4);
+  this->write_(0x6040, 15, 2);
+  return true;
+}
+
+bool CiA402Drive::zero_position() {
+  if (!this->home(35, 1, 1, this->acceleration_, 0))
+    return false;
+  this->read_(0x6064, 4, UINT32_MAX, 0);
+  this->write_(0x607A, 0, 4);
+  this->write_(0x6060, 1, 1);
+  this->read_(0x6061, 1, 0xFF, 1, true);
+  return true;
+}
+
+bool CiA402Drive::refresh() {
+  if (!this->begin_())
+    return false;
+  for (uint8_t i = 0; i < this->poll_count_(); i++)
+    this->append_(this->poll_step_(i));
+  return true;
 }
 
 }  // namespace esphome::cia402
