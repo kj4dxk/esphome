@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 from esphome.components import ble_client
 import esphome.config_validation as cv
-from esphome.const import CONF_TIMEOUT
+from esphome.const import CONF_ID, CONF_TIMEOUT
 from esphome.types import ConfigType
 
 CODEOWNERS = ["@kj4dxk"]
@@ -31,5 +31,7 @@ CONFIG_SCHEMA = (
 
 
 async def to_code(config: ConfigType) -> None:
-    var = await ble_client.new_ble_node_component(config)
+    var = cg.new_Pvariable(config[CONF_ID])
+    await cg.register_component(var, config)
+    await ble_client.register_ble_node(var, config)
     cg.add(var.set_timeout_ms(config[CONF_TIMEOUT].total_milliseconds))

@@ -21,5 +21,6 @@ CONFIG_SCHEMA = cv.Schema(
 
 async def to_code(config: ConfigType) -> None:
     hub = await cg.get_variable(config[CONF_THERMOPRO_TP970_ID])
-    sensors = binary_sensor.sub_binary_sensors(config)
-    await sensors(CONF_TEMPERATURE_STREAM, hub.set_temperature_stream_binary_sensor)
+    if conf := config.get(CONF_TEMPERATURE_STREAM):
+        var = await binary_sensor.new_binary_sensor(conf)
+        cg.add(hub.set_temperature_stream_binary_sensor(var))
